@@ -2,8 +2,8 @@
 Automatic prediction script for the malaria outbreak model.
 
 This script:
-- Loads the trained sklearn Pipeline bundle saved by `malaria_outbreak_prediction.py`
-  from `outputs/malaria_outbreak_random_forest.joblib`.
+- Loads the trained sklearn Pipeline bundle saved by training (`notebook.py` / `notebook.ipynb`)
+  as `outputs/malaria_outbreak_random_forest.joblib`.
 - Automatically reads NEW input data from a CSV file.
 - Aligns the input DataFrame columns with `feature_names` from training.
 - Calls `pipeline.predict()` directly (no manual scaler usage).
@@ -14,26 +14,29 @@ You can point `NEW_DATA_CSV` to:
 - a CSV of processed climate + malaria features.
 
 Beginner-friendly usage:
-    1. Run the training script once:
-           python malaria_outbreak_prediction.py
-    2. Prepare a new CSV with the same feature columns used in training.
-    3. Update `NEW_DATA_CSV` below if needed.
-    4. Run:
-           python auto_predict.py
+    1. Train once: `python notebook.py` (from this folder).
+    2. Either create `new_malaria_features.csv` with the same columns as training, or run
+       `python auto_predict.py` with no file — it will use a short demo sample from
+       `malaria_cases.csv` (+ climate merge if available).
+    3. Or pass an explicit path: `python auto_predict.py path/to/your.csv`
 """
 
 from __future__ import annotations
 
+import argparse
 import os
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
-import pandas as pd
 import joblib
+import pandas as pd
 
 
 BUNDLE_PATH = os.path.join("outputs", "malaria_outbreak_random_forest.joblib")
-# Change this to the CSV that contains new samples for prediction:
+MALARIA_CSV = "malaria_cases.csv"
+CLIMATE_MERGE_CSV = os.path.join("outputs", "climate_avgua_by_year_m49.csv")
+# Default filename if you prepare your own rows for prediction:
 NEW_DATA_CSV = "new_malaria_features.csv"
+DEMO_TAIL_ROWS = 5
 
 
 def load_bundle(path: str) -> Dict[str, Any]:
@@ -41,7 +44,7 @@ def load_bundle(path: str) -> Dict[str, Any]:
     if not os.path.isfile(path):
         raise FileNotFoundError(
             f"Model bundle not found at '{path}'.\n"
-            f"Train the model first by running malaria_outbreak_prediction.py."
+            "Train the model first by running notebook.py from this folder."
         )
     bundle = joblib.load(path)
     if "pipeline" not in bundle or "feature_names" not in bundle:
@@ -83,14 +86,62 @@ def load_new_data(csv_path: str, feature_names: List[str]) -> pd.DataFrame:
     return df_new
 
 
+def demo_feature_frame(feature_names: List[str], n: int = DEMO_TAIL_ROWS) -> pd.DataFrame:
+    """
+    Build a sample feature matrix like training: malaria_cases + optional climate merge,
+    then take the last ``n`` rows (so you can run auto_predict without new_malaria_features.csv).
+    """
+    if not os.path.isfile(MALARIA_CSV):
+        raise FileNotFoundError(
+            f"Demo mode needs '{MALARIA_CSV}' in the working directory "
+            f"(current: {os.getcwd()})."
+        )
+    df = pd.read_csv(MALARIA_CSV)
+    if os.path.isfile(CLIMATE_MERGE_CSV):
+        cl = pd.read_csv(CLIMATE_MERGE_CSV)
+        df = df.merge(
+            cl,
+            left_on=["DIM_TIME", "DIM_GEO_CODE_M49"],
+            right_on=["year", "m49"],
+            how="left",
+        )
+        df = df.drop(columns=["year", "m49"], errors="ignore")
+    df = df.tail(n)
+    missing = [c for c in feature_names if c not in df.columns]
+    if missing:
+        raise ValueError(
+            "Demo frame is missing columns expected by the trained model: "
+            f"{missing}\n"
+            f"Run extract_climate_features.py so '{CLIMATE_MERGE_CSV}' exists, "
+            "or pass a full CSV via: python auto_predict.py your_file.csv"
+        )
+    return df[feature_names]
+
+
 def run_prediction() -> None:
     """
     AUTOMATIC PREDICTION PIPELINE:
     - Load trained Pipeline bundle.
-    - Load and align new input data.
+    - Load and align new input data (or use a built-in demo sample).
     - Call `pipeline.predict()` on the new data.
     - Print predicted outbreak risk for each row.
     """
+    parser = argparse.ArgumentParser(
+        description="Predict malaria outbreak risk using the saved Random Forest pipeline."
+    )
+    parser.add_argument(
+        "input_csv",
+        nargs="?",
+        default=None,
+        help=f"CSV with the same feature columns as training (optional; default tries {NEW_DATA_CSV})",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help=f"Always use the last {DEMO_TAIL_ROWS} rows of {MALARIA_CSV} (+ climate merge).",
+    )
+    args = parser.parse_args()
+
     bundle = load_bundle(BUNDLE_PATH)
     pipeline = bundle["pipeline"]
     feature_names = bundle["feature_names"]
@@ -99,7 +150,22 @@ def run_prediction() -> None:
     print("[P] Feature names used during training:")
     print(feature_names, "\n")
 
-    df_new = load_new_data(NEW_DATA_CSV, feature_names)
+    if args.demo:
+        print(
+            f"[P] --demo: predicting on last {DEMO_TAIL_ROWS} rows of "
+            f"{MALARIA_CSV} (with climate merge if available).\n"
+        )
+        df_new = demo_feature_frame(feature_names)
+    elif args.input_csv is not None:
+        df_new = load_new_data(args.input_csv, feature_names)
+    elif os.path.isfile(NEW_DATA_CSV):
+        df_new = load_new_data(NEW_DATA_CSV, feature_names)
+    else:
+        print(
+            f"[P] No '{NEW_DATA_CSV}' and no input path given - "
+            f"using demo: last {DEMO_TAIL_ROWS} rows of {MALARIA_CSV}.\n"
+        )
+        df_new = demo_feature_frame(feature_names)
 
     # IMPORTANT: We do NOT call any scaler/encoder manually here.
     # All preprocessing is encapsulated in the Pipeline, so we only call:

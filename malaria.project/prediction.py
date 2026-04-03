@@ -1,64 +1,85 @@
 """
 Simple prediction script for the trained Random Forest malaria outbreak model.
 
-This script:
-- Loads the saved model bundle from `outputs/malaria_outbreak_random_forest.joblib`
-- Builds a single input sample as a pandas DataFrame
-- Applies the same scaling as used during training
-- Runs `model.predict` and prints the predicted outbreak class (0 = no outbreak, 1 = outbreak)
+How it works:
+1. Loads `outputs/malaria_outbreak_random_forest.joblib` (pipeline + feature_names from training).
+2. Builds one input row using the same columns as training: last row of `malaria_cases.csv`,
+   optionally merged with `outputs/climate_avgua_by_year_m49.csv` if that file exists
+   (same logic as the notebook / auto_predict.py).
+3. Reorders columns to match `feature_names` and calls `pipeline.predict()`.
+4. Prints the predicted class: 0 = no outbreak, 1 = outbreak.
 
-NOTE:
-- The feature names and value ranges must match the features used during training.
-- After you train the model with `malaria_outbreak_prediction.py`, the bundle will
-  contain: `model`, `scaler`, and `feature_names`.
+Run from anywhere; paths are resolved relative to this script's folder.
+
+If you see no "Predicted outbreak class" line, the script usually exited earlier with an error
+(e.g. missing bundle, wrong working directory was a problem before we fixed paths, or column mismatch).
 """
+
+from __future__ import annotations
+
+import os
 
 import joblib
 import pandas as pd
 
+MALARIA_CSV = "malaria_cases.csv"
+CLIMATE_MERGE_CSV = os.path.join("outputs", "climate_avgua_by_year_m49.csv")
+
+
+def _project_root() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
 
 def main() -> None:
-    # Load the trained Random Forest bundle (model + scaler + feature names)
-    bundle_path = "outputs/malaria_outbreak_random_forest.joblib"
-    model_bundle = joblib.load(bundle_path)
+    root = _project_root()
+    bundle_path = os.path.join(root, "outputs", "malaria_outbreak_random_forest.joblib")
 
-    model = model_bundle["model"]
-    scaler = model_bundle["scaler"]
+    if not os.path.isfile(bundle_path):
+        raise FileNotFoundError(
+            f"Model bundle not found:\n  {bundle_path}\n"
+            "Train the model first (e.g. run notebook.py or the training notebook), "
+            "then run this script again."
+        )
+
+    model_bundle = joblib.load(bundle_path)
+    pipeline = model_bundle["pipeline"]
     feature_names = model_bundle["feature_names"]
 
     print("Model bundle loaded from:", bundle_path)
     print("Features expected by the model:", feature_names)
 
-    sample = {
-    "temperature_c": 27.5,
-    "rainfall_mm": 120.0,
-    "humidity_pct": 78.0,
-    "population_density": 350.0,
-    "region": 1,
-    "altitude_m": 450.0,
-    "cases_last_month": 22
- # if encoded as integer during training
-    }
-
-    if not sample:
-        raise ValueError(
-            "The 'sample' dictionary is empty.\n"
-            "Edit prediction.py and fill 'sample' with keys matching 'feature_names' "
-            "and appropriate numeric values."
+    malaria_path = os.path.join(root, MALARIA_CSV)
+    if not os.path.isfile(malaria_path):
+        raise FileNotFoundError(
+            f"Need '{MALARIA_CSV}' next to this script to build a demo row:\n  {malaria_path}"
         )
 
-    # Create DataFrame and ensure columns are in the same order as during training
-    new_data = pd.DataFrame([sample])
-    # Reorder / subset columns to match training feature order
+    df = pd.read_csv(malaria_path)
+    climate_path = os.path.join(root, CLIMATE_MERGE_CSV)
+    if os.path.isfile(climate_path):
+        cl = pd.read_csv(climate_path)
+        df = df.merge(
+            cl,
+            left_on=["DIM_TIME", "DIM_GEO_CODE_M49"],
+            right_on=["year", "m49"],
+            how="left",
+        )
+        df = df.drop(columns=["year", "m49"], errors="ignore")
+
+    new_data = df.tail(1)
+    missing = [c for c in feature_names if c not in new_data.columns]
+    if missing:
+        raise ValueError(
+            "Demo row is missing columns the trained model expects:\n"
+            f"  {missing}\n"
+            f"Ensure climate merge output exists ({CLIMATE_MERGE_CSV}) if training used it, "
+            "or retrain after aligning data with notebook."
+        )
+
     new_data = new_data[feature_names]
 
-    # Apply the same scaling and remove feature names to avoid sklearn warning
-    new_data_scaled = scaler.transform(new_data)
-
-    # Make prediction
-    prediction = model.predict(new_data_scaled)[0]
-
-    print("Predicted outbreak class (0 = no outbreak, 1 = outbreak):", prediction)
+    prediction = pipeline.predict(new_data)[0]
+    print("Predicted outbreak class (0 = no outbreak, 1 = outbreak):", int(prediction))
 
 
 if __name__ == "__main__":

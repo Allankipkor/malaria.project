@@ -1,12 +1,13 @@
 # ============================
 # Imports & Setup
 # ============================
+# This file teaches the computer how to predict malaria outbreaks using past data.
+# Every section is explained for someone with no coding experience.
 
 import os
 
 import numpy as np
 import pandas as pd
-
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -27,12 +28,20 @@ from sklearn.metrics import (
 
 import joblib
 
+try:
+    from IPython.display import display
+except ImportError:
+    display = print  # running as `python notebook.py` outside Jupyter
+
 # Display settings for readability
 pd.set_option("display.max_columns", 50)
 sns.set(style="whitegrid")
 
 # Paths
 DATA_PATH = "malaria_cases.csv"  # <-- CSV dataset path
+CLIMATE_FEATURES_PATH = os.path.join(
+    "outputs", "climate_avgua_by_year_m49.csv"
+)  # from extract_climate_features.py
 OUTPUT_DIR = "outputs"
 MODEL_PATH = os.path.join(OUTPUT_DIR, "malaria_outbreak_random_forest.joblib")
 
@@ -63,6 +72,25 @@ if not os.path.isfile(DATA_PATH):
     )
 
 df = pd.read_csv(DATA_PATH)
+
+if os.path.isfile(CLIMATE_FEATURES_PATH):
+    climate_df = pd.read_csv(CLIMATE_FEATURES_PATH)
+    df = df.merge(
+        climate_df,
+        left_on=["DIM_TIME", "DIM_GEO_CODE_M49"],
+        right_on=["year", "m49"],
+        how="left",
+    )
+    df = df.drop(columns=["year", "m49"])
+    print(
+        f"Merged climate features from '{CLIMATE_FEATURES_PATH}' "
+        f"(rows still {len(df)})."
+    )
+else:
+    print(
+        f"Note: '{CLIMATE_FEATURES_PATH}' not found. "
+        "Run `python extract_climate_features.py` to add ERA5 temperature features."
+    )
 
 print(f"Loaded dataset from '{DATA_PATH}' with shape: {df.shape}")
 print("\nFirst 5 rows:")
